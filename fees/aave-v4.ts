@@ -2,6 +2,8 @@ import { CHAIN } from '../helpers/chains'
 import { FetchOptions, SimpleAdapter } from '../adapters/types'
 import { METRIC } from '../helpers/metrics'
 
+const ETHERFI_CASH_HUB = '0x66753c4e3fC84f1eD0e3C267C927284E9d90C572'
+
 const HUBS: Record<string, string[]> = {
   [CHAIN.ETHEREUM]: [
     '0xCca852Bc40e560adC3b1Cc58CA5b55638ce826c9', // Core
@@ -11,6 +13,14 @@ const HUBS: Record<string, string[]> = {
   [CHAIN.AVAX]: [
     '0xd07369fAE4A5BB13c9Ce446B052c7867B1AbDf6e', // Core
   ],
+  [CHAIN.OPTIMISM]: [
+    ETHERFI_CASH_HUB,
+  ],
+}
+
+// https://governance.aave.com/t/arfc-deploy-a-dedicated-aave-v4-whitelabel-instance-fully-managed-by-etherfi-on-op-mainnet-to-power-ether-fi-cash/25314
+const WHITELABEL_REVENUE_SHARE_PERCENT_BY_HUB: Record<string, bigint> = {
+  [ETHERFI_CASH_HUB.toLowerCase()]: 20n,
 }
 
 const abis = {
@@ -92,6 +102,14 @@ const fetch = async (options: FetchOptions) => {
     const key = `${allCalls[i].target}-${allCalls[i].params[0]}`
     const protocolRevenue = BigInt(feesAfter[i]) - BigInt(feesBefore[i]) + (mintedByKey[key] || 0n)
     if (protocolRevenue <= 0n) continue
+
+    const whitelabelRevenueSharePercent = WHITELABEL_REVENUE_SHARE_PERCENT_BY_HUB[allCalls[i].target.toLowerCase()]
+    if (whitelabelRevenueSharePercent !== undefined) {
+      const aaveRevenue = protocolRevenue * whitelabelRevenueSharePercent / 100n
+      dailyFees.add(token, aaveRevenue, METRIC.BORROW_INTEREST)
+      dailyProtocolRevenue.add(token, aaveRevenue, METRIC.BORROW_INTEREST)
+      continue
+    }
 
     const interestAccrued = protocolRevenue * 10000n / BigInt(liquidityFee)
     const supplySideRevenue = interestAccrued - protocolRevenue
@@ -178,6 +196,15 @@ const fetch = async (options: FetchOptions) => {
       const protocolFeeAmount = collateralRemoved * (sharesLiquidated - sharesToLiquidator) / sharesLiquidated
       const liquidatorBonus = totalBonus > protocolFeeAmount ? totalBonus - protocolFeeAmount : 0n
 
+      const hub = reserves[collateralReserveId].hub.toLowerCase()
+      const whitelabelRevenueSharePercent = WHITELABEL_REVENUE_SHARE_PERCENT_BY_HUB[hub]
+      if (whitelabelRevenueSharePercent !== undefined) {
+        const aaveRevenue = protocolFeeAmount * whitelabelRevenueSharePercent / 100n
+        dailyFees.add(collateralToken, aaveRevenue, METRIC.LIQUIDATION_FEES)
+        dailyProtocolRevenue.add(collateralToken, aaveRevenue, METRIC.LIQUIDATION_FEES)
+        continue
+      }
+
       dailyFees.add(collateralToken, totalBonus, METRIC.LIQUIDATION_FEES)
       dailySupplySideRevenue.add(collateralToken, liquidatorBonus, METRIC.LIQUIDATION_FEES)
       dailyProtocolRevenue.add(collateralToken, protocolFeeAmount, METRIC.LIQUIDATION_FEES)
@@ -223,6 +250,7 @@ const breakdownMethodology = {
 const chainConfig: Record<string, { start: string }> = {
   [CHAIN.ETHEREUM]: { start: '2026-03-30' },
   [CHAIN.AVAX]: { start: '2026-07-07' },
+  [CHAIN.OPTIMISM]: { start: '2026-07-31' },
 }
 
 const adapter: SimpleAdapter = {
